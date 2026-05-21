@@ -6,31 +6,22 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 iii = register_worker(
     os.environ.get("III_URL", "ws://<INFERENCE_PRIVATE_IP>:49134"),
-    InitOptions(worker_name="math-worker"),
+    InitOptions(worker_name="inference-worker"),
 )
 logger = Logger()
 
-# 1. Install dependencies
-# pip install transformers accelerate gguf torch
+model_id = "ggml-org/gemma-3-270m-GGUF"
+gguf_file = "gemma-3-270m-Q8_0.gguf"
 
-
-model_id = "ggml-org/gemma-3-270m-GGUF" # "Qwen/Qwen3-0.6B-GGUF"
-gguf_file = "gemma-3-270m-Q8_0.gguf" # "Qwen3-0.6B-Q8_0.gguf"  # Q8 quantized variant
-
-# 2. Load tokenizer and model from the GGUF file
 tokenizer = AutoTokenizer.from_pretrained(model_id, gguf_file=gguf_file)
 model = AutoModelForCausalLM.from_pretrained(model_id, gguf_file=gguf_file)
 
 tokenizer.chat_template = ("""{{ bos_token }}
 {%- if messages[0]['role'] == 'system' -%}
     {%- if messages[0]['content'] is string -%}
-        {%- set first_user_prefix = messages[0]['content'] + '
-
-' -%}
+        {%- set first_user_prefix = messages[0]['content'] + '\n\n' -%}
     {%- else -%}
-        {%- set first_user_prefix = messages[0]['content'][0]['text'] + '
-
-' -%}
+        {%- set first_user_prefix = messages[0]['content'][0]['text'] + '\n\n' -%}
     {%- endif -%}
     {%- set loop_messages = messages[1:] -%}
 {%- else -%}
@@ -46,14 +37,13 @@ tokenizer.chat_template = ("""{{ bos_token }}
     {%- else -%}
         {%- set role = message['role'] -%}
     {%- endif -%}
-    {{ '<start_of_turn>' + role + '
-' + (first_user_prefix if loop.first else "") }}
+    {{ '<start_of_turn>' + role + '\n' + (first_user_prefix if loop.first else "") }}
     {%- if message['content'] is string -%}
         {{ message['content'] | trim }}
     {%- elif message['content'] is iterable -%}
         {%- for item in message['content'] -%}
             {%- if item['type'] == 'image' -%}
-                {{ '<start_of_image>' }}
+                {{ '<image>' }}
             {%- elif item['type'] == 'text' -%}
                 {{ item['text'] | trim }}
             {%- endif -%}
@@ -61,17 +51,13 @@ tokenizer.chat_template = ("""{{ bos_token }}
     {%- else -%}
         {{ raise_exception("Invalid content type") }}
     {%- endif -%}
-    {{ '<end_of_turn>
-' }}
+    {{ '<end_of_turn>\n' }}
 {%- endfor -%}
 {%- if add_generation_prompt -%}
-    {{'<start_of_turn>model
-'}}
+    {{'<start_of_turn>model\n'}}
 {%- endif -%}""")
 
-# 3. Run inference
 def run_inference_handler(payload: Dict[str, str | List[Dict[str, Any]]]) -> Dict[str, Any]:
-    # prompt = "Explain quantum entanglement in simple terms."
     messages = payload.get("messages", [])
 
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -82,49 +68,10 @@ def run_inference_handler(payload: Dict[str, str | List[Dict[str, Any]]]) -> Dic
 
     print(result)
 
-    # running_inference = iii.trigger(
-    #     {
-    #         "function_id": "inference::get",
-    #         "payload": {"scope": "math", "key": "running_inference"},
-    #     }
-    # )
-    # new_result = payload | {"messages": payload["messages"] + (running_inference or [])}
-    # iii.trigger(
-    #     {
-    #         "function_id": "inference::set",
-    #         "payload": {"scope": "math", "key": "running_inference", "value": new_result},
-    #     }
-    # )
-    # result["running_inference"] = new_result
     return {
-	"response": result
+        "response": result
     }
-# def add_handler(payload: dict) -> dict:
-#     a = payload.get("a", 0)
-#     b = payload.get("b", 0)
-#     logger.info(f"math::add called in Python with a={a}, b={b}")
-#     result = {"c": a + b}
 
-#     # --- Uncomment after: iii worker add iii-state ---
-#     running_total = iii.trigger(
-#         {
-#             "function_id": "state::get",
-#             "payload": {"scope": "math", "key": "running_total"},
-#         }
-#     )
-#     new_total = (running_total or 0) + result["c"]
-#     iii.trigger(
-#         {
-#             "function_id": "state::set",
-#             "payload": {"scope": "math", "key": "running_total", "value": new_total},
-#         }
-#     )
-#     result["running_total"] = new_total
-
-#     return result
-
-
-# iii.register_function("math::add", add_handler)
 iii.register_function("inference::run_inference", run_inference_handler)
 
 print("Inference worker started - listening for calls")
