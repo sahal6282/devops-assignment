@@ -1,63 +1,52 @@
 #!/bin/bash
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 set -e
 
-exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+echo "Starting Inference Worker setup..."
 
-echo "=== Starting Inference VM setup ==="
+# 1. SWAP Space (Prevents Out-Of-Memory crashes)
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
-# ---------------------------
-# BASE SYSTEM SETUP
-# ---------------------------
+# 2. Base Install
 apt update -y
 apt install -y git curl unzip python3 python3-pip python3-venv build-essential
 
-# ---------------------------
-# SWAP (IMPORTANT FOR TORCH)
-# ---------------------------
-fallocate -l 2G /swapfile || true
-chmod 600 /swapfile || true
-mkswap /swapfile || true
-swapon /swapfile || true
-echo '/swapfile none swap sw 0 0' >> /etc/fstab || true
-
-# ---------------------------
-# WORKSPACE SETUP
-# ---------------------------
+# 3. Clone Repo
 mkdir -p /opt/app
 cd /opt/app
-
-# clone repo
 git clone https://github.com/sahal6282/devops-assignment.git quickstart-repo
-
 cd /opt/app/quickstart-repo/quickstart/workers/inference-worker
 
-# fix permissions
-chown -R ubuntu:ubuntu /opt/app/quickstart-repo
+# 4. Clean Python VENV and Install Packages (Includes gguf)
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install iii transformers accelerate torch gguf
 
-# ---------------------------
-# PYTHON ENV (IMPORTANT FIX)
-# ---------------------------
-sudo -u ubuntu python3 -m venv venv
+# 5. Create Systemd Service for Python Worker
+cat << EOF > /etc/systemd/system/inference-worker.service
+[Unit]
+Description=Python Inference RPC Worker
+After=network.target
 
-# install dependencies as ubuntu user (VERY IMPORTANT)
-sudo -u ubuntu bash -c "
-source venv/bin/activate &&
-pip install --upgrade pip &&
-pip install iii-sdk transformers accelerate torch
-"
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/app/quickstart-repo/quickstart/workers/inference-worker
+Environment=III_URL="ws://${api_ip}:49134"
+ExecStart=/opt/app/quickstart-repo/quickstart/workers/inference-worker/venv/bin/python inference_worker.py
+Restart=always
+RestartSec=5
 
-# ---------------------------
-# ENV VARS
-# ---------------------------
-echo "export III_URL=ws://<API_PRIVATE_IP>:49134" >> /etc/environment
+[Install]
+WantedBy=multi-user.target
+EOF
 
-# ---------------------------
-# RUN WORKER (background)
-# ---------------------------
-sudo -u ubuntu bash -c "
-cd /opt/app/quickstart-repo/quickstart/workers/inference-worker &&
-source venv/bin/activate &&
-nohup python inference_worker.py > /var/log/inference-worker.log 2>&1 &
-"
+systemctl daemon-reload
+systemctl enable --now inference-worker.service
 
-echo "=== Inference VM setup complete ==="
+echo "Inference VM setup complete"
