@@ -1,40 +1,63 @@
 #!/bin/bash
-exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
-
 set -e
 
-export HOME=/root
-export PATH=$PATH:/root/.local/bin
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
-# Add swap for t3.micro
-fallocate -l 2G /swapfile
-chmod 600 /swapfile
-mkswap /swapfile
-swapon /swapfile
+echo "=== Starting Inference VM setup ==="
 
-echo '/swapfile none swap sw 0 0' >> /etc/fstab
-
+# ---------------------------
+# BASE SYSTEM SETUP
+# ---------------------------
 apt update -y
-apt install -y git curl unzip python3 python3-pip python3-venv
+apt install -y git curl unzip python3 python3-pip python3-venv build-essential
 
-# Install iii
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+# ---------------------------
+# SWAP (IMPORTANT FOR TORCH)
+# ---------------------------
+fallocate -l 2G /swapfile || true
+chmod 600 /swapfile || true
+mkswap /swapfile || true
+swapon /swapfile || true
+echo '/swapfile none swap sw 0 0' >> /etc/fstab || true
 
-cp $HOME/.local/bin/iii /usr/local/bin/iii
-
+# ---------------------------
+# WORKSPACE SETUP
+# ---------------------------
 mkdir -p /opt/app
 cd /opt/app
 
+# clone repo
 git clone https://github.com/sahal6282/devops-assignment.git quickstart-repo
 
 cd /opt/app/quickstart-repo/quickstart/workers/inference-worker
 
-python3 -m venv venv
+# fix permissions
+chown -R ubuntu:ubuntu /opt/app/quickstart-repo
 
-source venv/bin/activate
+# ---------------------------
+# PYTHON ENV (IMPORTANT FIX)
+# ---------------------------
+sudo -u ubuntu python3 -m venv venv
 
-pip install -r requirements.txt
+# install dependencies as ubuntu user (VERY IMPORTANT)
+sudo -u ubuntu bash -c "
+source venv/bin/activate &&
+pip install --upgrade pip &&
+pip install iii-sdk transformers accelerate torch
+"
 
-export III_URL="ws://${api_ip}:49134"
+# ---------------------------
+# ENV VARS
+# ---------------------------
+echo "export III_URL=ws://<API_PRIVATE_IP>:49134" >> /etc/environment
 
-nohup venv/bin/python inference_worker.py > /var/log/inference-worker.log 2>&1 &
+# ---------------------------
+# RUN WORKER (background)
+# ---------------------------
+sudo -u ubuntu bash -c "
+cd /opt/app/quickstart-repo/quickstart/workers/inference-worker &&
+source venv/bin/activate &&
+nohup python inference_worker.py > /var/log/inference-worker.log 2>&1 &
+"
+
+echo "=== Inference VM setup complete ==="
