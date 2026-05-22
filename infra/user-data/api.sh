@@ -2,10 +2,17 @@
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 set -e
 
-# 1. Configure API VM to act as NAT Router for the private subnet
+echo "=== Starting API VM Setup ==="
+
+# FIX: Explicitly set the home directory for the installer
+export HOME=/root
+export PATH=$PATH:/root/.local/bin
+
+# 1. Bulletproof NAT Routing
 echo "net.ipv4.ip_forward = 1" | tee -a /etc/sysctl.conf
 sysctl -p
-iptables -t nat -A POSTROUTING -o enX0 -j MASQUERADE || iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PRIMARY_INTERFACE=$(ip route | grep default | awk '{print $5}')
+iptables -t nat -A POSTROUTING -o $PRIMARY_INTERFACE -j MASQUERADE
 
 # 2. Base Install
 apt update -y
@@ -23,7 +30,7 @@ mkdir -p /opt/app
 cd /opt/app
 git clone https://github.com/sahal6282/devops-assignment.git quickstart-repo
 
-# 5. Create Systemd Service for Engine
+# 5. Create Systemd Service for Engine (FIXED EXECSTART)
 cat << 'EOF' > /etc/systemd/system/iii-engine.service
 [Unit]
 Description=III API Engine
@@ -33,7 +40,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/app/quickstart-repo/quickstart
-ExecStart=/usr/local/bin/iii start config.yaml
+ExecStart=/usr/local/bin/iii --no-update-check
 Restart=always
 RestartSec=5
 
@@ -44,4 +51,4 @@ EOF
 systemctl daemon-reload
 systemctl enable --now iii-engine.service
 
-echo "API VM setup complete"
+echo "=== API VM setup complete ==="
