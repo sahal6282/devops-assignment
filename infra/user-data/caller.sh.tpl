@@ -2,13 +2,11 @@
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 set -e
 
-echo "Starting Caller Worker setup..."
-
-apt update -y
-apt install -y git curl
+echo "=== Starting Caller Worker Setup ==="
 
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt install -y nodejs
+apt update -y
+apt install -y nodejs git curl unzip build-essential
 
 mkdir -p /opt/app
 cd /opt/app
@@ -16,12 +14,11 @@ git clone https://github.com/sahal6282/devops-assignment.git quickstart-repo
 cd /opt/app/quickstart-repo/quickstart/workers/caller-worker
 
 npm install
-npm run build || true
 
-# Create Systemd Service for Node Worker
-cat << EOF > /etc/systemd/system/caller-worker.service
+# Notice the Terraform variable ${api_ip} here!
+cat << 'EOF' > /etc/systemd/system/caller-worker.service
 [Unit]
-Description=Caller Node RPC Worker
+Description=TypeScript Caller RPC Worker
 After=network.target
 
 [Service]
@@ -29,9 +26,9 @@ Type=simple
 User=root
 WorkingDirectory=/opt/app/quickstart-repo/quickstart/workers/caller-worker
 Environment=III_URL="ws://${api_ip}:49134"
-ExecStart=/usr/bin/node dist/worker.js
+ExecStart=/usr/bin/npx tsx src/worker.ts
 Restart=always
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
@@ -40,4 +37,4 @@ EOF
 systemctl daemon-reload
 systemctl enable --now caller-worker.service
 
-echo "Caller VM setup complete"
+echo "=== Caller VM setup complete ==="
