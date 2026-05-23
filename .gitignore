@@ -71,3 +71,4 @@ tfplan.*
 # =========================
 *.zip
 *.tar.gz
+terraform.tfvars
