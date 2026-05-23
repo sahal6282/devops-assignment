@@ -1,6 +1,6 @@
-# 🚀 Deployment Guide
+# 🚀 DevOps Internship Assignment — Deployment Guide
 
-A step-by-step guide for provisioning and testing cloud infrastructure using Terraform and AWS.
+A complete guide to deploying a multi-VM private-subnet microservices stack on AWS using Terraform, exposing an SLM inference pipeline through a JSON HTTP API.
 
 ---
 
@@ -14,17 +14,49 @@ Ensure the following tools are installed on your local machine before proceeding
 
 ---
 
+## 🏗️ Architecture Diagram
+
+The diagram below illustrates the VPC structure, the separation of public and private subnets, and the RPC communication flow between the API Gateway and the worker nodes.
+
+```
+ 🌎 Public Internet
+        │
+        ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  AWS VPC (10.0.0.0/16)                                  │
+ │                                                         │
+ │  [ 🌐 Public Subnet: 10.0.1.0/24 ]                      │
+ │    ├─ 🖥️  API Gateway VM (Public IP)                    │
+ │    └─ 🚪 NAT Gateway (Outbound for workers)             │
+ │          │                                              │
+ │          │ (WebSocket RPC on Port 49134)                │
+ │          ▼                                              │
+ │  [ 🔒 Private Subnet: 10.0.2.0/24 ]                     │
+ │    ├─ ⚙️  Caller Worker VM (Node.js)                    │
+ │    │     │ (Internal RPC)                               │
+ │    │     ▼                                              │
+ │    └─ 🧠 Inference Worker VM (Python SLM)               │
+ └─────────────────────────────────────────────────────────┘
+```
+
+**How to read this flow:**
+
+- **Ingress:** External traffic hits the API Gateway VM on port `3111` via its public IP.
+- **Dispatch:** The API Gateway forwards the request over the internal VPC network to the Caller Worker on port `49134` via WebSocket RPC.
+- **Inference:** The Caller Worker communicates with the Inference Worker to execute the SLM model logic and returns the result back up the chain.
+- **Network Security:** Worker VMs have no public IP addresses and are isolated in a private subnet. They reach the internet for updates only through the NAT Gateway.
+
+---
+
 ## 🌍 Infrastructure Region & AMI Compatibility
 
 This project is configured by default to deploy to **`ap-south-1` (Mumbai)**.
 
-Because AWS Machine Images (AMIs) are regional, the infrastructure expects an Ubuntu image specific to the chosen region. If you wish to change the deployment region, you must update two components to maintain compatibility:
+Because AWS Machine Images (AMIs) are regional, the infrastructure expects an Ubuntu image specific to the chosen region. If you wish to change the deployment region, you must update two components:
 
 1. **Region Setting:** Update the `region` variable in `infra/variables.tf` to your desired AWS region (e.g., `us-east-1`).
 
-2. **AMI Compatibility:** This repository uses a static AMI mapped to the Mumbai region. You must provide a valid Ubuntu 24.04 AMI ID for your chosen region.
-
-   You can find the correct AMI ID using the AWS CLI:
+2. **AMI Compatibility:** This repository uses a static AMI mapped to the Mumbai region. You must supply a valid Ubuntu 24.04 AMI ID for your chosen region:
 
    ```bash
    aws ec2 describe-images \
@@ -33,8 +65,6 @@ Because AWS Machine Images (AMIs) are regional, the infrastructure expects an Ub
      --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
      --output text
    ```
-
-   Or browse manually via the [AWS EC2 Console](https://console.aws.amazon.com/ec2/) under **AMIs → Public Images**.
 
 > **Note on Reproducibility:** The configuration is pinned to `ap-south-1` to ensure immediate, out-of-the-box success on a clean AWS account. It is structured to allow easy porting to other regions by updating `variables.tf` and supplying the appropriate AMI ID as described above.
 
@@ -65,24 +95,16 @@ Default output format [None]: json
 
 ## Step 1.5: Configure Your `terraform.tfvars` File
 
-Terraform uses a `terraform.tfvars` file to supply secret values that shouldn't be hardcoded in your infrastructure files. **This file is listed in `.gitignore` and must never be committed to version control.**
-
-### What it is
-
-The repository includes a `variables.tf` that declares all the inputs Terraform needs but leaves them empty. You fill in the actual values by creating a `terraform.tfvars` file inside the `infra/` directory.
+Terraform uses a `terraform.tfvars` file to supply secret values that shouldn't be hardcoded in your infrastructure files. **This file must never be committed to version control.**
 
 ### Create the file
 
 ```bash
 cd infra
-cp terraform.tfvars.example terraform.tfvars   # if an example file exists
-# — or create it from scratch:
 touch terraform.tfvars
 ```
 
 ### Fill in your values
-
-Open `terraform.tfvars` and add your EC2 key pair name:
 
 ```hcl
 # terraform.tfvars  ← DO NOT commit this file
@@ -91,20 +113,13 @@ key_name = "my-ec2-keypair"   # Name of your EC2 Key Pair in AWS (for SSH access
 ```
 
 > **Where does `key_name` come from?**
-> Go to **AWS Console → EC2 → Key Pairs → Create key pair**. Give it a name (e.g. `my-ec2-keypair`), download the `.pem` file, and store it safely. Enter that same name as the `key_name` value above.
+> Go to **AWS Console → EC2 → Key Pairs → Create key pair**. Give it a name, download the `.pem` file, and store it safely. Use that same name as the `key_name` value above.
 
 ### Keep it secret
 
-Confirm `terraform.tfvars` is in your `.gitignore` before pushing:
-
 ```bash
-grep "tfvars" .gitignore
-# Expected output: *.tfvars
-```
-
-If it's missing, add it:
-
-```bash
+grep "tfvars" .gitignore   # confirm *.tfvars is present
+# if missing:
 echo "*.tfvars" >> .gitignore
 ```
 
@@ -127,13 +142,13 @@ cd infra
 terraform init
 ```
 
-3. *(Optional)* **Review the deployment plan** to see what resources will be created:
+3. *(Optional)* **Review the deployment plan:**
 
 ```bash
 terraform plan
 ```
 
-4. **Apply the configuration** to provision the cloud environment:
+4. **Apply the configuration:**
 
 ```bash
 terraform apply
@@ -147,29 +162,28 @@ Type `yes` when prompted to confirm.
 
 ## Step 3: Test the API
 
-Once the infrastructure is up and the instances are fully bootstrapped, test the end-to-end microservices pipeline.
-
-Run the following `curl` command from your local terminal, replacing `<YOUR_API_PUBLIC_IP>` with the IP address from the previous step:
+### Request
 
 ```bash
 curl -X POST http://<YOUR_API_PUBLIC_IP>:3111/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {
-        "role": "user",
-        "content": "Write a short, two-line poem about cloud computing."
-      }
-    ]
-  }'
+  -d '{"messages": [{"role": "user", "content": "Hello"}]}'
 ```
+
+### Schema
+
+| Field | Type | Description |
+|---|---|---|
+| `messages` | array | Conversation turns to send to the model |
+| `messages[].role` | string | Either `"user"` or `"assistant"` |
+| `messages[].content` | string | The message text |
 
 ### Expected Response
 
 ```json
 {
   "message": "Caller → Inference pipeline working",
-  "response": "Write a short, two-line poem about cloud computing.\nproceeding\n...",
+  "response": "Hello\nproceeding\n...",
   "success": true
 }
 ```
@@ -178,7 +192,7 @@ curl -X POST http://<YOUR_API_PUBLIC_IP>:3111/v1/chat/completions \
 
 ## Step 4: Teardown & Cleanup
 
-To avoid unnecessary AWS charges from the running NAT Gateway and EC2 instances, destroy the infrastructure when you are done testing:
+To avoid unnecessary AWS charges from the running NAT Gateway and EC2 instances:
 
 ```bash
 terraform destroy
@@ -202,8 +216,30 @@ Type `yes` when prompted to confirm.
 
 ---
 
+## 🛡️ Production Hardening Considerations
+
+- **TLS & Authentication:** Terminate HTTPS at an ALB with an ACM certificate. Enforce API key or JWT validation at the gateway before any request reaches the worker mesh.
+- **Secrets Management:** Move all secrets out of `terraform.tfvars` and into AWS Secrets Manager or SSM Parameter Store, injected at runtime.
+- **IAM Least Privilege:** Assign each EC2 instance a dedicated IAM role scoped to only the permissions it requires.
+- **mTLS on Internal RPC:** VPC isolation alone is not sufficient. Add mutual TLS between workers to prevent lateral movement if any instance is compromised.
+- **Containerisation:** Package each worker as a Docker image to eliminate environment drift and ensure consistent behaviour across dev, staging, and production.
+- **High Availability:** Replace single VMs with Auto Scaling Groups behind an internal ALB with health checks, so unhealthy instances are replaced automatically.
+- **Observability:** Add CloudWatch Log Groups, structured JSON logging on all workers, and alerting on error rates and inference latency.
+
+## 📈 Scaling to a 100x Larger Model
+
+At 100x scale the shift is from managing servers to managing a platform:
+
+- **GPU Compute:** Replace `t3` instances with `g4dn` or `p3` GPU instances. Use Spot instances for inference workloads to manage cost.
+- **Inference Server:** Replace the custom Python worker with a dedicated inference server such as vLLM or NVIDIA Triton for batching, quantisation, and VRAM management.
+- **Model Storage:** Weights too large to bake into an AMI would be stored in S3 and loaded at startup, or served from EFS shared across inference nodes.
+- **Kubernetes Orchestration:** Migrate from raw EC2 to Amazon EKS. Kubernetes provides automated pod replication, self-healing, and GPU-aware resource scheduling — ensuring models have the VRAM they need without being killed by the OOM killer.
+- **Async API:** Synchronous HTTP will time out under heavy inference load. Shift to an async pattern where the API returns a job ID immediately, with clients polling or receiving a webhook on completion.
+
+---
+
 ## ⚠️ Notes
 
-- The API is exposed on port `3111`. Ensure this port is accessible in your security group rules.
-- **Never commit `terraform.tfvars`** — it contains secrets. Add `*.tfvars` to `.gitignore`.
+- The API is exposed on port `3111`. Ensure this port is open in your EC2 security group rules.
+- **Never commit `terraform.tfvars`** — it contains secrets. Confirm `*.tfvars` is in `.gitignore`.
 - Keep your `.pem` key file safe; losing it means you can no longer SSH into your EC2 instances.
